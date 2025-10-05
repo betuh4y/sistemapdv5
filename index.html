@@ -520,7 +520,8 @@
         update,
         onValue,
         push,
-        get
+        get,
+        runTransaction
       } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
       const firebaseConfig = {
         apiKey: "AIzaSyDJBdK9I-jtg9ujTc9Xsxr-hnPfkId4wIU",
@@ -921,54 +922,61 @@
                 updates[`produtos/${user.uid}/${productCode}/estoque`] = newStock;
               });
               const paymentDetails = payments.map(p => `${p.type}: R$ ${p.amount.toFixed(2)}`).join(', ');
-              const saleData = {
-                dataVenda: new Date().toISOString(),
-                valorTotal: subtotal,
-                tipoPagamento: payments.length > 1 ? paymentDetails : `${payments[0].type}: R$ ${payments[0].amount.toFixed(2)}`,
-                pagamentos: payments,
-                descontoTotal: totalDiscount,
-                acrescimoTotal: totalAddition,
-                items: cart.map(item => ({
-                  codigo: item.product.barcode,
-                  nome: item.product.name,
-                  preco: item.subtotal - item.discount,
-                  quantidade: item.quantity,
-                  unidade: item.product.unit
-                })),
-                observacoes: "Venda PDV",
-                troco: change > 0 ? change : 0
-              };
-              const baseRef = ref(db, `vendas/${user.uid}`);
-              const newSaleRef = push(baseRef);
-              await Promise.all([
-                set(newSaleRef, saleData),
-                update(ref(db), updates)
-              ]);
-              // Update cash sales by payment to appear in the second PDV report
-              const today = new Date().toISOString().split('T')[0];
-              const cashRef = ref(db, `cash/${user.uid}/${today}`);
-              const cashSnapshot = await get(cashRef);
-              let cashData = cashSnapshot.val() || {};
-              let salesByPayment = cashData.salesByPayment || {
-                Pix: 0,
-                Dinheiro: 0,
-                Credito: 0,
-                Debito: 0,
-                Outro: 0
-              };
-              // FIX: Apportion each payment correctly, and adjust for change on cash
-              payments.forEach(p => {
-                const paymentTypeKey = p.type;
-                salesByPayment[paymentTypeKey] = (salesByPayment[paymentTypeKey] || 0) + p.amount;
+              const counterRef = ref(db, `counters/${user.uid}/saleNumber`);
+              await runTransaction(counterRef, (current) => {
+                return (current || 0) + 1;
+              }).then(async (transaction) => {
+                const saleNumber = transaction.snapshot.val();
+                const saleData = {
+                  saleNumber: saleNumber,
+                  dataVenda: new Date().toISOString(),
+                  valorTotal: subtotal,
+                  tipoPagamento: payments.length > 1 ? paymentDetails : `${payments[0].type}: R$ ${payments[0].amount.toFixed(2)}`,
+                  pagamentos: payments,
+                  descontoTotal: totalDiscount,
+                  acrescimoTotal: totalAddition,
+                  items: cart.map(item => ({
+                    codigo: item.product.barcode,
+                    nome: item.product.name,
+                    preco: item.subtotal - item.discount,
+                    quantidade: item.quantity,
+                    unidade: item.product.unit
+                  })),
+                  observacoes: "Venda PDV",
+                  troco: change > 0 ? change : 0
+                };
+                const baseRef = ref(db, `vendas/${user.uid}`);
+                const newSaleRef = push(baseRef);
+                await Promise.all([
+                  set(newSaleRef, saleData),
+                  update(ref(db), updates)
+                ]);
+                // Update cash sales by payment to appear in the second PDV report
+                const today = new Date().toISOString().split('T')[0];
+                const cashRef = ref(db, `cash/${user.uid}/${today}`);
+                const cashSnapshot = await get(cashRef);
+                let cashData = cashSnapshot.val() || {};
+                let salesByPayment = cashData.salesByPayment || {
+                  Pix: 0,
+                  Dinheiro: 0,
+                  Credito: 0,
+                  Debito: 0,
+                  Outro: 0
+                };
+                // FIX: Apportion each payment correctly, and adjust for change on cash
+                payments.forEach(p => {
+                  const paymentTypeKey = p.type;
+                  salesByPayment[paymentTypeKey] = (salesByPayment[paymentTypeKey] || 0) + p.amount;
+                });
+                if (change > 0) {
+                  salesByPayment['Dinheiro'] -= change;
+                }
+                cashData.salesByPayment = salesByPayment;
+                await update(cashRef, cashData);
+                printSaleReceipt(saleData, amount);
+                showToast(`Venda finalizada! Total: R$ ${subtotal.toFixed(2)} - Troco: R$ ${change > 0 ? change.toFixed(2) : '0.00'}`, 'success');
+                cancelSale();
               });
-              if (change > 0) {
-                salesByPayment['Dinheiro'] -= change;
-              }
-              cashData.salesByPayment = salesByPayment;
-              await update(cashRef, cashData);
-              printSaleReceipt(saleData, amount);
-              showToast(`Venda finalizada! Total: R$ ${subtotal.toFixed(2)} - Troco: R$ ${change > 0 ? change.toFixed(2) : '0.00'}`, 'success');
-              cancelSale();
             } catch (error) {
               showToast(`Erro ao finalizar venda: ${error.message}`, 'error');
               console.error(error);
@@ -997,6 +1005,8 @@
         });
         yPos += lineHeight;
         doc.setFontSize(10);
+        doc.text(`Venda Nº: ${sale.saleNumber || 'N/A'}`, margin, yPos);
+        yPos += lineHeight;
         doc.text(`Data: ${dateTime}`, margin, yPos);
         yPos += lineHeight;
         doc.text("-----------------------------------------", margin, yPos);
@@ -1074,7 +1084,7 @@
         totalAddition = 0;
         barcodeInputEl.placeholder = "Código de barras, gramatura (ex: 150 *) ou código do produto";
         updateDisplay();
-        showToast('Venda realizada', 'warning');
+        showToast('Venda cancelada', 'warning');
         barcodeInputEl.focus();
       }
 
