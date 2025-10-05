@@ -956,10 +956,14 @@
                 Debito: 0,
                 Outro: 0
               };
-              // Use the last payment type to add the full subtotal (as if single payment in second PDV)
-              const lastPayment = payments[payments.length - 1];
-              const paymentTypeKey = lastPayment ? lastPayment.type : 'Outro';
-              salesByPayment[paymentTypeKey] = (salesByPayment[paymentTypeKey] || 0) + subtotal;
+              // FIX: Apportion each payment correctly, and adjust for change on cash
+              payments.forEach(p => {
+                const paymentTypeKey = p.type;
+                salesByPayment[paymentTypeKey] = (salesByPayment[paymentTypeKey] || 0) + p.amount;
+              });
+              if (change > 0) {
+                salesByPayment['Dinheiro'] -= change;
+              }
               cashData.salesByPayment = salesByPayment;
               await update(cashRef, cashData);
               printSaleReceipt(saleData, amount);
